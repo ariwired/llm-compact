@@ -1,0 +1,51 @@
+name: Tests and lint
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Python 3.12
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            requirements-dev.txt
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements-dev.txt
+
+      - name: Load tokenizer tables
+        run: |
+          python - <<'PY'
+          import tiktoken
+
+          for encoding in ("o200k_base", "cl100k_base"):
+              tiktoken.get_encoding(encoding)
+          PY
+
+      - name: Check C and C++ compilers
+        run: |
+          command -v gcc
+          command -v g++
+
+      - name: Run Ruff
+        run: python -m ruff check .
+
+      - name: Run tests
+        run: python -m pytest -q
