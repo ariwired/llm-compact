@@ -99,3 +99,83 @@ def test_full_idempotent():
     src = (EXAMPLES / "sample.py").read_text()
     once = run(src).code
     assert run(once).code == once
+
+@pytest.mark.parametrize("lv", ["full", "light"])
+@pytest.mark.parametrize(
+    "src",
+    [
+        "x = 1\x0c\ny = 2\nz = f'{x}'\n",
+        "\x0c\nx = 1\n\x0c\ny = f'{x} {x!r}'\n",
+        "x = '\x1c'\ny = f'{x}'\n",
+        "x = 1  # a\x85b\ny = f'{x}'\n",
+        "x = 1  # a\u2028b\ny = f'{x}'\n",
+        "s = '\u2029'\nt = f'{s}'\n",
+    ],
+)
+def test_tokenizer_line_boundaries_are_not_splitlines(src, lv):
+    r = run(src, lv)
+    assert not r.fallback, r.warnings
+    same_ast(src, r.code)
+ 
+ 
+@pytest.mark.parametrize(
+    ("src", "comment", "kept"),
+    [
+        ("#!/usr/bin/env python3\nx = 1\n", "#!/usr/bin/env python3", True),
+        ("# coding: utf-8\nx = 1\n", "# coding: utf-8", True),
+        ("# -*- coding: latin-1 -*-\nx = 1\n", "# -*- coding: latin-1 -*-", True),
+        ("# vim: set fileencoding=utf-8 :\nx = 1\n", "# vim: set fileencoding=utf-8 :", True),
+        ("#!/usr/bin/env python3\n# coding=utf-8\nx = 1\n", "# coding=utf-8", True),
+        ("\n# coding: utf-8\nx = 1\n", "# coding: utf-8", True),
+        ("# coding design patterns is my passion\nx = 1\n", "# coding design", False),
+        ("#!/usr/bin/env python3\n# coding design patterns\nx = 1\n", "# coding design", False),
+        ("x = 1\n# coding design patterns\n", "# coding design", False),
+        ("x = 1\n# coding: utf-8\n", "# coding: utf-8", False),
+        ("x = 1  # coding: utf-8\n", "# coding: utf-8", False),
+        ("x = 1\ny = 2\n# coding: utf-8\n", "# coding: utf-8", False),
+    ],
+)
+def test_strip_comments_keeps_only_real_coding_headers(src, comment, kept):
+    r = run(src, drop=True)
+    assert not r.fallback, r.warnings
+    assert (comment in r.code) is kept
+    same_ast(src, r.code)
+ 
+ 
+@pytest.mark.parametrize("lv", ["full", "light"])
+@pytest.mark.parametrize(
+    "pragma",
+    [
+        "# type: ignore",
+        "# type: ignore[arg-type]",
+        "# type: int",
+        "# noqa",
+        "# noqa: E501",
+        "# NOQA:E501,F401",
+        "# fmt: off",
+        "# fmt: on",
+        "# fmt: skip",
+        "# isort: skip",
+        "# pylint: disable=unused-import",
+        "# mypy: ignore-errors",
+        "# pyright: ignore",
+        "# ruff: noqa",
+        "# nosec",
+        "# pragma: no cover",
+        "# some explanation  # noqa: E501",
+    ],
+)
+def test_strip_comments_keeps_tool_pragmas(pragma, lv):
+    src = f"import os  {pragma}\n{pragma}\nx = [1,  2]  # plain note\n"
+    r = run(src, lv, drop=True)
+    assert not r.fallback, r.warnings
+    assert r.code.count(pragma) == 2
+    assert "plain note" not in r.code
+    same_ast(src, r.code)
+ 
+ 
+def test_strip_comments_removes_regular_comments():
+    src = "# just a comment\nx = 1  # trailing note\n# nothing special\ny = 2\n"
+    r = run(src, drop=True)
+    assert r.code == "x=1\ny=2\n"
+    same_ast(src, r.code)

@@ -1,5 +1,6 @@
 import ast
 import io
+import re
 import token
 import tokenize
 import warnings
@@ -14,10 +15,42 @@ def ast_signature(src: str) -> str:
         compile(node, "<llm-compact-validation>", "exec")
     return ast.dump(node, include_attributes=False)
 
+_CODING_RE = re.compile(r"^[ \t\f]*#.*?coding[:=][ \t]*([-\w.]+)", re.ASCII)
+_BLANK_OR_COMMENT_RE = re.compile(r"^[ \t\f]*(?:[#\r\n]|$)", re.ASCII)
 
-def _tokens(src: str) -> list[tokenize.TokenInfo]:
+_PRAGMA_RE = re.compile(
+    r"#\s*(?:type:|noqa\b|nosec\b|fmt:|isort:|yapf:|pylint:|pyright:|mypy:|ruff:|flake8:"
+    r"|pragma:)",
+    re.IGNORECASE,
+)
+
+
+def _rows(src: str) -> list[str]:
+    """
+        Split source into physical lines exactly like the tokenizer reads them.
+            str.splitlines() also breaks on \\x0c, \\x1c, \\x85, \\u2028 and others, which would
+            shift every row index relative to the line numbers reported by tokenize.
+    """
+    return io.StringIO(src).readlines()
+
+
+def _is_header_comment(tk: tokenize.TokenInfo, rows: list[str]) -> bool:
+    row = tk.start[0]
+    if row == 1:
+        return tk.string.startswith("#!") or _CODING_RE.match(rows[0]) is not None
+    if row == 2:
+        return _CODING_RE.match(rows[1]) is not None and (
+            _BLANK_OR_COMMENT_RE.match(rows[0]) is not None
+        )
+    return False
+
+
+def _keep_comment(tk: tokenize.TokenInfo, rows: list[str]) -> bool:
+    return _is_header_comment(tk, rows) or _PRAGMA_RE.search(tk.string) is not None
+
+
+def _tokens(src: str, rows: list[str]) -> list[tokenize.TokenInfo]:
     toks = list(tokenize.generate_tokens(io.StringIO(src).readline))
-    rows = src.splitlines(keepends=True)
     cum = [0]
     for row in rows:
         cum.append(cum[-1] + len(row))
@@ -88,17 +121,13 @@ def _emit(src: str, opt: CompactOptions) -> str:
     ev: tokenize.TokenInfo | None = None
     bol = True
     lvl = 0
-    rows = src.splitlines(keepends=True)
-    for tk in _tokens(src):
+    rows = _rows(src)
+    for tk in _tokens(src, rows):
         if tk.type in (token.ENDMARKER, token.ENCODING, token.INDENT, token.DEDENT):
             continue
-        if tk.type == token.COMMENT and opt.strip_comments:
-            hdr = (tk.start[0] == 1 and tk.string.startswith("#!")) or (
-                tk.start[0] <= 2 and "coding" in tk.string
-            )
-            if not hdr:
-                ev = tk
-                continue
+        if tk.type == token.COMMENT and opt.strip_comments and not _keep_comment(tk, rows):
+            ev = tk
+            continue
         if tk.type in (token.NEWLINE, token.NL):
             keep = (
                 opt.level == "light"
@@ -113,7 +142,7 @@ def _emit(src: str, opt: CompactOptions) -> str:
             continue
 
         joined = False
-        
+
         if ev is not None and tk.start[0] > ev.end[0]:
             rest = rows[ev.end[0] - 1][ev.end[1] :]
             mid = "".join(rows[ev.end[0] : tk.start[0] - 1])
