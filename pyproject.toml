@@ -12,6 +12,9 @@ license = "MIT"
 license-files = ["LICENSE"]
 dependencies = ["tiktoken>=0.14,<0.15"]
 
+[project.scripts]
+llm-compact = "llm_compact.cli:main"
+
 [project.optional-dependencies]
 ui = ["streamlit>=1.64,<1.65"]
 dev = ["pytest>=9.1,<10", "ruff>=0.16,<0.17", "build>=1.6,<2"]
