@@ -114,12 +114,14 @@ def test_digraph_directive_falls_back():
 @pytest.mark.parametrize("drop", [False, True])
 @pytest.mark.parametrize("newline", ["\n", "\r\n"])
 def test_multiline_comment_in_directive_preserves_original(lang, lv, drop, newline):
-    src = newline.join([
-        "#define VALUE /* explanation",
-        "continued */ 1",
-        "int main(void) { return VALUE - 1; }",
-        "",
-    ])
+    src = newline.join(
+        [
+            "#define VALUE /* explanation",
+            "continued */ 1",
+            "int main(void) { return VALUE - 1; }",
+            "",
+        ]
+    )
     result = run(src, lang, lv, drop)
     assert result.fallback
     assert result.validation == "not-validated"
@@ -127,10 +129,13 @@ def test_multiline_comment_in_directive_preserves_original(lang, lv, drop, newli
     assert "preprocessor" in result.warnings[0]
 
 
-@pytest.mark.parametrize("src", [
-    "#define VALUE /* inline */ 1\nint value = VALUE;",
-    '#define MARKER "/*"\nconst char *value = MARKER;',
-])
+@pytest.mark.parametrize(
+    "src",
+    [
+        "#define VALUE /* inline */ 1\nint value = VALUE;",
+        '#define MARKER "/*"\nconst char *value = MARKER;',
+    ],
+)
 def test_directive_guard_is_deliberately_conservative(src):
     result = run(src, "c")
     assert result.fallback
@@ -149,12 +154,15 @@ def test_csharp_escaped_identifiers_preserve_original(lv, drop, name):
     assert "Unicode" in result.warnings[0]
 
 
-@pytest.mark.parametrize("src", [
-    r'class A { string value = "\u0061"; }',
-    r'class A { string value = @"\u0061"; }',
-    r"class A { char value = '\u0061'; }",
-    r'class A { /* \u0061 */ int value = 1; }',
-])
+@pytest.mark.parametrize(
+    "src",
+    [
+        r'class A { string value = "\u0061"; }',
+        r'class A { string value = @"\u0061"; }',
+        r"class A { char value = '\u0061'; }",
+        r"class A { /* \u0061 */ int value = 1; }",
+    ],
+)
 def test_csharp_unicode_text_inside_literals_and_comments_is_preserved(src):
     result = run(src, "csharp")
     assert not result.fallback
@@ -165,3 +173,41 @@ def test_lexical_validation_does_not_claim_syntax_validation():
     result = run("int main( {", "c")
     assert result.validation == "lexical"
     assert any("does not prove semantic equivalence" in warning for warning in result.warnings)
+
+
+@pytest.mark.parametrize("lang", ["c", "cpp", "java", "csharp"])
+@pytest.mark.parametrize("eol", ["\r", "\n", "\r\n"])
+@pytest.mark.parametrize("lv", ["full", "light"])
+def test_line_comment_ends_at_any_line_terminator(lang, eol, lv):
+    src = f"int a; // note{eol}int b;{eol}"
+    for drop in (False, True):
+        out = run(src, lang, lv, drop)
+        assert not out.fallback, out.warnings
+        assert "int b;" in out.code
+
+
+@pytest.mark.parametrize("eol", ["\x85", " ", " "])
+def test_csharp_unicode_line_terminators_end_line_comments(eol):
+    out = run(f"int a; // note{eol}int b;\n", "csharp", "full", True)
+    assert not out.fallback, out.warnings
+    assert "int b;" in out.code
+
+
+@pytest.mark.parametrize("lang", ["c", "cpp"])
+def test_directive_ends_at_lone_cr(lang):
+    out = run("#define X 1\rint b;\r", lang)
+    assert not out.fallback, out.warnings
+    assert "int b;" in out.code
+
+
+@pytest.mark.parametrize("lang", ["c", "cpp"])
+def test_trigraph_created_by_compaction_falls_back(lang):
+    src = "int x = a ?? /* c */ b;\n"
+    out = run(src, lang)
+    assert out.fallback and out.code == src
+
+
+def test_csharp_scales_linearly_enough():
+    src = "class A { void F() { int x = 1; } }\n" * 3000
+    out = run(src, "csharp")
+    assert not out.fallback and out.code.startswith("class A{void F(){int x=1;}}")

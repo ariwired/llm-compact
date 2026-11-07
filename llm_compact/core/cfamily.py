@@ -10,6 +10,15 @@ SYMS = set(
 ENC = {"L", "u", "U", "u8"}
 RAW = {"R", "LR", "uR", "UR", "u8R"}
 
+_EOL = re.compile(r"[\r\n]")
+_CSHARP_EOL = re.compile("[\r\n\x85\u2028\u2029]")
+_INTERP = re.compile(r'\${2,}"')
+_SPLICE_OR_TRIGRAPH = re.compile(r"\\\r?\n|\?\?[/=()'!<>-]")
+
+
+def _eol(lang: str) -> re.Pattern[str]:
+    return _CSHARP_EOL if lang == "csharp" else _EOL
+
 
 def _ident_start(ch: str) -> bool:
     return bool(ch) and (ch.isalpha() or ch in "_$" or ord(ch) > 127)
@@ -82,11 +91,12 @@ def _number(s: str, at: int, lang: str) -> int:
 
 def lex_cfamily(s: str, lang: str) -> list[Token]:
     toks: list[Token] = []
+    eol = _eol(lang)
     p = 0
     bol = True
     while p < len(s):
         ch = s[p]
-        if ch in "\r\n":
+        if eol.match(ch):
             bol = True
             p += 1
             continue
@@ -96,8 +106,8 @@ def lex_cfamily(s: str, lang: str) -> list[Token]:
         b = p
         kd = "punct"
         if s.startswith("//", p):
-            e = s.find("\n", p)
-            p = len(s) if e < 0 else e
+            m = eol.search(s, p)
+            p = len(s) if m is None else m.start()
             kd = "comment"
         elif s.startswith("/*", p):
             e = s.find("*/", p + 2)
@@ -107,13 +117,13 @@ def lex_cfamily(s: str, lang: str) -> list[Token]:
             kd = "comment"
         elif ch == "#" and bol and lang != "java":
             while True:
-                e = s.find("\n", p)
-                if e < 0:
+                m = eol.search(s, p)
+                if m is None:
                     p = len(s)
                     break
-                ln = s[p:e].rstrip("\r")
-                if lang != "csharp" and ln.endswith("\\"):
-                    p = e + 1
+                e = m.start()
+                if lang != "csharp" and s[p:e].endswith("\\"):
+                    p = e + (2 if s.startswith("\r\n", e) else 1)
                 else:
                     p = e
                     break
@@ -126,7 +136,7 @@ def lex_cfamily(s: str, lang: str) -> list[Token]:
             s.startswith('$"', p)
             or s.startswith('$@"', p)
             or s.startswith('@$"', p)
-            or re.match(r'\${2,}"', s[p:])
+            or _INTERP.match(s, p)
         ):
             raise UnsafeSourceError(
                 "C# string interpolation needs a dedicated parser; original kept."
@@ -180,6 +190,17 @@ def _newlines(s: str) -> str:
     return "".join(re.findall(r"\r\n|\n|\r", s))
 
 
+def _has_splice_or_trigraph(text: str, toks: list[Token]) -> bool:
+    parts: list[str] = []
+    pos = 0
+    for tk in toks:
+        if tk.kind == "directive":
+            parts.append(text[pos : tk.start])
+            pos = tk.end
+    parts.append(text[pos:])
+    return _SPLICE_OR_TRIGRAPH.search("".join(parts)) is not None
+
+
 def compact_cfamily(src: str, lang: str, opt: CompactOptions) -> CoreResult:
     try:
         if lang == "java" and re.search(r"\\u+[0-9a-fA-F]{4}", src):
@@ -201,11 +222,7 @@ def compact_cfamily(src: str, lang: str, opt: CompactOptions) -> CoreResult:
                     raise UnsafeSourceError(
                         "Macro with stringification or concatenation needs a preprocessor."
                     )
-            bare = src
-            for tk in reversed(toks):
-                if tk.kind == "directive":
-                    bare = bare[: tk.start] + bare[tk.end :]
-            if re.search(r"\\\r?\n|\?\?[/=()'!<>-]", bare):
+            if _has_splice_or_trigraph(src, toks):
                 raise UnsafeSourceError("Line splicing or trigraphs are not supported.")
 
         live = [tk for tk in toks if not (opt.strip_comments and tk.kind == "comment")]
@@ -239,8 +256,11 @@ def compact_cfamily(src: str, lang: str, opt: CompactOptions) -> CoreResult:
         elif prev is not None and prev.kind in ("directive", "comment") and "\n" in rest:
             buf.append("\n")
         new = "".join(buf)
-        if signature(lx(new), opt.strip_comments) != signature(toks, opt.strip_comments):
+        new_toks = lx(new)
+        if signature(new_toks, opt.strip_comments) != signature(toks, opt.strip_comments):
             raise UnsafeSourceError("The lexical sequence changed after the transformation.")
+        if lang in ("c", "cpp") and _has_splice_or_trigraph(new, new_toks):
+            raise UnsafeSourceError("Compaction would create a line splice or trigraph.")
         if opt.level == "light" and new.count("\n") != src.count("\n"):
             raise UnsafeSourceError("The line count changed in light mode.")
         msgs = [

@@ -24,3 +24,9 @@ def test_bad_options_and_size():
 )
 def test_language_dispatch(lang, src, want):
     assert compact(src, lang).code == want
+
+
+@pytest.mark.parametrize("bad", [{}, {"level": "full"}, "full", 1])
+def test_options_must_be_compact_options(bad):
+    with pytest.raises(TypeError):
+        compact("x = 1", "python", bad)
